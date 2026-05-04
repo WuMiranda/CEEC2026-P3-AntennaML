@@ -41,5 +41,9 @@ project/
 ├── train.py             # 训练逻辑
 ├── evaluate.py          # 指标计算
 └── utils.py             # 工具函数，可暂时没有
-
 参数要求高
+6.完整代码文件，训练训练集1，将训练好的模型导出pth/onnx，写inference.py，用分割的另一份数据看看效果。
+### 提交的文件
+一个轻量模型文件，比如 model.onnx 或 model.pth
+一个 inference.py
+可能还要有：标准化参数文件、类别映射说明、requirements.txt
