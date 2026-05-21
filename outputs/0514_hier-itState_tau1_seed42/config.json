@@ -1,0 +1,22 @@
+{
+  "data_dir": "0514",
+  "x_csv": "x_train.csv",
+  "y_csv": "y_train.csv",
+  "out_dir": "outputs/0514_hier-itState_tau1_seed42",
+  "seed": 42,
+  "split": [
+    0.6,
+    0.2,
+    0.2
+  ],
+  "split_mode": "hierarchical_within_label:itState",
+  "epochs": 50,
+  "batch_size": 256,
+  "lr": 0.001,
+  "weight_decay": 0.0001,
+  "beta": 0.999,
+  "tau": 1.0,
+  "derived_features": true,
+  "feature_dim": 29,
+  "device_auto": "cuda"
+}
