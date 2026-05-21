@@ -1,0 +1,42 @@
+[
+  {
+    "name": "0514_hier-itState_tau05_seed42",
+    "split_mode": "hierarchical_within_label:itState",
+    "tau": 0.5,
+    "test_accuracy": 0.8975034889130098,
+    "test_macro_f1": 0.8402135511275481,
+    "test_weighted_f1": 0.8997673637590244,
+    "minority_mean_f1": 0.7573571980463809,
+    "minority_mean_recall": 0.8271246629356375
+  },
+  {
+    "name": "0514_hier-itState_tau1_seed42",
+    "split_mode": "hierarchical_within_label:itState",
+    "tau": 1.0,
+    "test_accuracy": 0.9028789993280611,
+    "test_macro_f1": 0.8394399940297637,
+    "test_weighted_f1": 0.9058830144483841,
+    "minority_mean_f1": 0.7450042322380869,
+    "minority_mean_recall": 0.8172700791398232
+  },
+  {
+    "name": "0514_hier-off_tau05_seed42",
+    "split_mode": "stratified_label",
+    "tau": 0.5,
+    "test_accuracy": 0.9114865912261665,
+    "test_macro_f1": 0.84199522631993,
+    "test_weighted_f1": 0.914396464779209,
+    "minority_mean_f1": 0.7336773253659167,
+    "minority_mean_recall": 0.8068084374248432
+  },
+  {
+    "name": "0514_hier-off_tau1_seed42",
+    "split_mode": "stratified_label",
+    "tau": 1.0,
+    "test_accuracy": 0.90678447785873,
+    "test_macro_f1": 0.8356143130454864,
+    "test_weighted_f1": 0.9100697365147989,
+    "minority_mean_f1": 0.7248643670817294,
+    "minority_mean_recall": 0.8058930729519768
+  }
+]
