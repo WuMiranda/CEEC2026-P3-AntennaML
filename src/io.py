@@ -7,7 +7,6 @@ import pandas as pd
 
 DEFAULT_FEATURE_COLUMNS = (
     "gammaIn1Re",
-    "gammaIn1Re",
     "gammaIn1Im",
     "closeFreqMHz",
     "itState",
