@@ -1,8 +1,9 @@
-# Balanced Framework（长尾分类可复现训练）
+# Balanced Framework
 
 本目录提供一个“可复现 + 更工程化”的训练/评估框架，用于解决类别不均衡（少数类样本少）带来的性能问题。
 
 核心策略：
+
 - 均衡采样：按类别频次生成 `WeightedRandomSampler`
 - Class-Balanced 权重（Effective Number of Samples）
 - Logit Adjustment（按训练集先验修正 logits）
@@ -11,6 +12,7 @@
 ## 依赖
 
 建议新建非 base 环境（示例）：
+
 - Python >= 3.10
 - numpy
 - pandas
@@ -22,6 +24,7 @@
 ## 输入数据格式
 
 默认读取 `--data_dir` 下的：
+
 - `x_train.csv`
 - `y_train.csv`
 
@@ -36,6 +39,7 @@ python -m balanced_framework.train_balanced --data_dir 0514 --out_dir outputs/ba
 ```
 
 常用参数：
+
 - `--split 0.6 0.2 0.2`：train/val/test 比例（默认 6/2/2）
 - `--hierarchical_col itState`：层级划分（默认开启；在每个 label 内按 itState 分桶后再划分）
 - `--epochs 50`
@@ -45,9 +49,25 @@ python -m balanced_framework.train_balanced --data_dir 0514 --out_dir outputs/ba
 ## 输出产物
 
 输出目录（`--out_dir`）包含：
+
 - `model.pt`：最优模型参数（以 val macro-F1 选优）
 - `preprocess.npz`：标准化参数、itState 类别数、训练集先验等（推理复现用）
 - `metrics.json`：accuracy / macro-F1 / weighted-F1 / per-class 指标
 - `confusion_val.png`、`confusion_test.png`：混淆矩阵图
 - `config.json`：本次训练的配置（seed、split、超参等）
+
+## 结果汇总与作图
+
+当你在 `outputs/` 下有多组实验结果时，可以用脚本自动整理与作图（默认少数类为 `4 5 6 8 10 11 13`）：
+
+```bash
+python -m balanced_framework.analyze_outputs --outputs_dir outputs --out_dir outputs/_analysis --pattern "0514_*_seed42"
+```
+
+会生成：
+
+- `outputs/_analysis/summary.json`：四组实验的总体指标与少数类均值指标
+- `outputs/_analysis/overall_metrics.png`：accuracy / macro-F1 / weighted-F1 对比图
+- `outputs/_analysis/minority_metrics.png`：少数类平均 F1 与 Recall 对比图
+- `outputs/_analysis/minority_f1_heatmap.png`：少数类逐类 F1 热力图
 
