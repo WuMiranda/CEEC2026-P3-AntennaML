@@ -182,3 +182,48 @@ python -m balanced_framework.train_balanced --data_dir 0514 --use_geometry_featu
 \`\`\`bash
 python -m balanced_framework.train_balanced --data_dir 0514 --no_freq_bins --out_dir outputs/0514_phys_nobin
 \`\`\`
+
+## 11. 频率树嫁接到 MLP 前：按频段分段建模（与物理意义一致）
+
+### 11.1 动机（为什么分叉必须基于频率）
+
+在天线/匹配网络系统里，频率变化会直接改变输入阻抗与反射轨迹形态，因此“同一组几何特征在不同频段的判别规则可能不同”。若强行用单一模型覆盖全频段，模型往往会学到折中边界，导致少数类或边界类被牺牲。
+
+因此引入“频率树（Frequency Tree）”作为 gating：仅用 `closeFreqMHz`（`x_train.csv` 第三列）学习一棵一维二叉树，把样本按频段切成若干子域，再在每个子域上用 MLP head 学习更合适的分类边界。
+
+### 11.2 模型形式（Tree → MLP）
+
+该结构可以理解为“按频率分段的 Mixture-of-Experts”，但 gating 是确定性的树路由：
+- Tree 节点仅包含阈值 \(t\)，规则为：
+  \[
+  f \le t \Rightarrow \text{left},\quad f > t \Rightarrow \text{right}
+  \]
+- 落到某个 leaf 后，使用对应的 MLP head 做分类；同时各 leaf 共享同一条 trunk（特征抽取层），避免训练成本随 leaf 数线性爆炸。
+
+### 11.3 训练方式（避免泄露）
+
+- 频率树只用 train split 的 \((f_{train}, y_{train})\) 拟合（CART 的一维分裂，指标为 Gini）
+- val/test 只做路由，不参与任何阈值学习
+- 输出保存：
+  - `freq_tree.json`：树结构
+  - `preprocess.npz`：树数组与 leaf priors（推理复现用）
+
+### 11.4 长尾处理如何对齐到 leaf
+
+当启用频率树时，本框架会在每个 leaf 内统计训练集类别分布，并计算：
+- leaf priors（带平滑）：用于 leaf 的 Logit Adjustment
+- leaf 的 Class-Balanced 权重：用于 loss 的样本加权
+
+这样可以保证：每个频段子域内，仍然针对长尾分布进行纠偏。
+
+### 11.5 运行示例
+
+\`\`\`bash
+python -m balanced_framework.train_balanced --data_dir 0514 --freq_tree_depth 2 --out_dir outputs/0514_freqtree_d2
+\`\`\`
+
+推荐先固定 `tau=0.5` 并对比：
+- `--freq_tree_depth 0`（关闭 tree，单模型）
+- `--freq_tree_depth 1/2`（浅层分段）
+
+并且强制与组内统一 split 对齐：复用 `train_idx.npy/val_idx.npy/test_idx.npy`。

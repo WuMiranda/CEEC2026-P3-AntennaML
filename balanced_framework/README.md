@@ -45,6 +45,20 @@ python -m balanced_framework.train_balanced --data_dir 0514 --out_dir outputs/ba
 - `--epochs 50`
 - `--batch_size 256`
 - `--tau 1.0`：Logit Adjustment 系数（0 表示关闭）
+- `--it_encoding bits|onehot`：itState 编码（默认 bits=4bit）
+- `--freq_bins 10` / `--no_freq_bins`：频率分箱 one-hot（默认 10；分箱边界只在 train 拟合）
+- `--use_geometry_features`：追加复平面圆拟合残差特征（输出 `circle_params.tsv`）
+- `--freq_tree_depth N`：用“频率树”把样本路由到不同 MLP 叶子头（默认 0=关闭）
+
+## 频率树 + MLP（面向物理的分段建模）
+
+在射频/天线系统中，不同频段下阻抗与反射轨迹形态可能明显不同。为了让模型更贴近“按频段分段建模”的物理直觉，本框架支持仅使用 `closeFreqMHz`（即 `x_train.csv` 的第三列）学习一棵一维二叉树，并把样本路由到不同的 MLP 叶子头（共享 trunk，不同 leaf head）。
+
+运行示例（频率树深度 2=4 个叶子）：
+
+```bash
+python -m balanced_framework.train_balanced --data_dir 0514 --freq_tree_depth 2 --out_dir outputs/0514_freqtree_d2
+```
 
 ## 输出产物
 
@@ -55,6 +69,8 @@ python -m balanced_framework.train_balanced --data_dir 0514 --out_dir outputs/ba
 - `metrics.json`：accuracy / macro-F1 / weighted-F1 / per-class 指标
 - `confusion_val.png`、`confusion_test.png`：混淆矩阵图
 - `config.json`：本次训练的配置（seed、split、超参等）
+- `train_idx.npy`、`val_idx.npy`、`test_idx.npy`：本次切分索引（用于组内统一复现实验）
+- `freq_tree.json`：当开启 `--freq_tree_depth` 时保存的频率树结构
 
 ## 结果汇总与作图
 
