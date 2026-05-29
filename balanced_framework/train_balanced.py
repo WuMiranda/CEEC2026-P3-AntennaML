@@ -12,10 +12,11 @@ from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 
 from src.io import load_features_csv, load_labels_csv
 
+from .geometry import build_residual_features, circle_params_to_table, fit_label_circles
 from .metrics import confusion_matrix, metrics_dict_from_cm, macro_f1
 from .models import MLP
 from .plotting import save_confusion_matrix_png
-from .preprocess import FeatureConfig, Standardizer, build_features
+from .preprocess import FeatureConfig, Standardizer, build_features, fit_freq_bin_edges, freq_to_bin_onehot
 from .splits import SplitConfig, hierarchical_split_indices_within_label, stratified_split_indices
 
 
@@ -60,6 +61,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--derived_features", action="store_true", default=True)
     p.add_argument("--no_derived_features", action="store_false", dest="derived_features")
 
+    p.add_argument("--it_encoding", type=str, default="bits", choices=("bits", "onehot"))
+    p.add_argument("--freq_bins", type=int, default=10)
+    p.add_argument("--no_freq_bins", action="store_true", default=False)
+
+    p.add_argument("--use_geometry_features", action="store_true", default=False)
+
     return p.parse_args()
 
 
@@ -83,11 +90,14 @@ def main() -> None:
     x_path = data_dir / args.x_csv
     y_path = data_dir / args.y_csv
 
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     features_df = load_features_csv(x_path)
     y = load_labels_csv(y_path)
 
-    feat_cfg = FeatureConfig(derived=bool(args.derived_features))
-    x, feat_meta = build_features(features_df, feat_cfg)
+    feat_cfg = FeatureConfig(derived=bool(args.derived_features), it_encoding=str(args.it_encoding))
+    x, feat_meta, scale_mask = build_features(features_df, feat_cfg)
 
     num_classes = int(np.max(y)) + 1
     if split_cfg.hierarchical_col:
@@ -111,11 +121,54 @@ def main() -> None:
         )
         split_mode = "stratified_label"
 
+    np.save(out_dir / "train_idx.npy", tr_idx.astype(np.int64))
+    np.save(out_dir / "val_idx.npy", va_idx.astype(np.int64))
+    np.save(out_dir / "test_idx.npy", te_idx.astype(np.int64))
+
+    freq_all = features_df["closeFreqMHz"].to_numpy(np.float32)
+    if bool(args.no_freq_bins) or int(args.freq_bins) <= 0:
+        freq_edges = np.array([], dtype=np.float32)
+        freq_bins_oh = np.zeros((x.shape[0], 0), dtype=np.float32)
+    else:
+        freq_edges = fit_freq_bin_edges(freq_all[tr_idx], bins=int(args.freq_bins))
+        freq_bins_oh = freq_to_bin_onehot(freq_all, freq_edges)
+
+    if freq_bins_oh.shape[1] > 0:
+        x = np.concatenate([x, freq_bins_oh.astype(np.float32)], axis=1)
+        scale_mask = np.concatenate([scale_mask, np.zeros((freq_bins_oh.shape[1],), dtype=bool)], axis=0)
+
+    if bool(args.use_geometry_features):
+        g1_re = features_df["gammaIn1Re"].to_numpy(np.float32)
+        g1_im = features_df["gammaIn1Im"].to_numpy(np.float32)
+        g2_re = features_df["gammaIn2Re"].to_numpy(np.float32)
+        g2_im = features_df["gammaIn2Im"].to_numpy(np.float32)
+
+        params = fit_label_circles(
+            g1_re=g1_re[tr_idx],
+            g1_im=g1_im[tr_idx],
+            g2_re=g2_re[tr_idx],
+            g2_im=g2_im[tr_idx],
+            y=y[tr_idx],
+        )
+        geom = build_residual_features(g1_re=g1_re, g1_im=g1_im, g2_re=g2_re, g2_im=g2_im, params=params)
+        x = np.concatenate([x, geom.astype(np.float32)], axis=1)
+        scale_mask = np.concatenate([scale_mask, np.ones((geom.shape[1],), dtype=bool)], axis=0)
+
+        header = "label\tn_train\tg1_cx\tg1_cy\tg1_r\tg2_cx\tg2_cy\tg2_r\n"
+        table = circle_params_to_table(params)
+        lines = [header] + ["\t".join([str(int(r[0])), str(int(r[1]))] + [f"{v:.10f}" for v in r[2:]]) + "\n" for r in table]
+        (out_dir / "circle_params.tsv").write_text("".join(lines), encoding="utf-8")
+
+    feat_meta = dict(feat_meta)
+    feat_meta["feature_dim"] = int(x.shape[1])
+    feat_meta["freq_bins"] = 0 if freq_edges.size == 0 else int(freq_edges.size - 1)
+    feat_meta["use_geometry_features"] = bool(args.use_geometry_features)
+
     x_tr, y_tr = x[tr_idx], y[tr_idx]
     x_va, y_va = x[va_idx], y[va_idx]
     x_te, y_te = x[te_idx], y[te_idx]
 
-    scaler = Standardizer().fit(x_tr)
+    scaler = Standardizer().fit(x_tr, scale_mask=scale_mask)
     x_tr = scaler.transform(x_tr)
     x_va = scaler.transform(x_va)
     x_te = scaler.transform(x_te)
@@ -154,9 +207,6 @@ def main() -> None:
     log_prior_t = torch.log(torch.tensor(priors, dtype=torch.float32, device=device) + 1e-12)
     tau = float(args.tau)
     adjust = (-tau) * log_prior_t
-
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
 
     best_val = -1.0
     best_state: dict[str, Any] | None = None
@@ -199,8 +249,12 @@ def main() -> None:
         priors=priors.astype(np.float32),
         tau=np.array([tau], dtype=np.float32),
         it_num=np.array([feat_meta["it_num"]], dtype=np.int64),
+        it_encoding=np.array([0 if feat_meta["it_encoding"] == "bits" else 1], dtype=np.int64),
         derived=np.array([1 if feat_meta["derived"] else 0], dtype=np.int64),
         feature_dim=np.array([feat_meta["feature_dim"]], dtype=np.int64),
+        freq_bin_edges=freq_edges.astype(np.float32),
+        freq_bins=np.array([feat_meta["freq_bins"]], dtype=np.int64),
+        use_geometry_features=np.array([1 if feat_meta["use_geometry_features"] else 0], dtype=np.int64),
     )
 
     model.load_state_dict(best_state["model"])
@@ -238,6 +292,9 @@ def main() -> None:
         "beta": float(args.beta),
         "tau": float(args.tau),
         "derived_features": bool(args.derived_features),
+        "it_encoding": str(args.it_encoding),
+        "freq_bins": 0 if bool(args.no_freq_bins) else int(args.freq_bins),
+        "use_geometry_features": bool(args.use_geometry_features),
         "feature_dim": int(feat_meta["feature_dim"]),
         "device_auto": str(device),
     }

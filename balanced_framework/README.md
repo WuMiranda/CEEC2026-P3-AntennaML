@@ -71,3 +71,12 @@ python -m balanced_framework.analyze_outputs --outputs_dir outputs --out_dir out
 - `outputs/_analysis/minority_metrics.png`：少数类平均 F1 与 Recall 对比图
 - `outputs/_analysis/minority_f1_heatmap.png`：少数类逐类 F1 热力图
 
+## 复平面几何特征与树模型
+
+如果需要把复平面“圆心/圆参数/到圆残差”等几何特征接入，并进一步尝试树模型（用于提升少数类、增强可解释性），参考总结与计划：
+- [GEOMETRY_TREE_SUMMARY.md](file:///e:/OneDrive/%E7%A0%94%E7%94%B5%E8%B5%9B/CEEC2026-P3-AntennaML/balanced_framework/GEOMETRY_TREE_SUMMARY.md)
+
+已实现的增强选项：
+- itState 支持 `4bit(bits)` 或 `onehot`（见 `--it_encoding`）
+- 频率支持 train-fit 的等距分箱 one-hot（见 `--freq_bins/--no_freq_bins`）
+- 支持追加 tmp.py 风格的“按 label 拟合圆→残差特征”（见 `--use_geometry_features`），并输出 `circle_params.tsv`
