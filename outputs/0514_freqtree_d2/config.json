@@ -1,0 +1,28 @@
+{
+  "data_dir": "0514",
+  "x_csv": "x_train.csv",
+  "y_csv": "y_train.csv",
+  "out_dir": "outputs/0514_freqtree_d2",
+  "seed": 42,
+  "split": [
+    0.6,
+    0.2,
+    0.2
+  ],
+  "split_mode": "hierarchical_within_label:itState",
+  "epochs": 50,
+  "batch_size": 256,
+  "lr": 0.001,
+  "weight_decay": 0.0001,
+  "beta": 0.999,
+  "tau": 1.0,
+  "derived_features": true,
+  "it_encoding": "bits",
+  "freq_bins": 10,
+  "use_geometry_features": false,
+  "freq_tree_depth": 2,
+  "freq_tree_min_leaf": 200,
+  "freq_tree_candidates": 128,
+  "feature_dim": 27,
+  "device_auto": "cuda"
+}
