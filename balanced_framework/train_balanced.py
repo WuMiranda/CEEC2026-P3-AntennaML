@@ -12,12 +12,22 @@ from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 
 from src.io import load_features_csv, load_labels_csv
 
-from .geometry import build_residual_features, circle_params_to_table, fit_label_circles
+from .geometry import build_residual_features, build_residual_summary_features, circle_params_to_table, fit_label_circles
 from .freq_tree import apply_frequency_tree, fit_frequency_tree, tree_to_dict
 from .metrics import confusion_matrix, metrics_dict_from_cm, macro_f1
 from .models import FrequencyGatedMLP, MLP
 from .plotting import save_confusion_matrix_png
-from .preprocess import FeatureConfig, Standardizer, build_features, fit_freq_bin_edges, freq_to_bin_onehot
+from .preprocess import (
+    ABLATION_FEATURES,
+    FeatureConfig,
+    Standardizer,
+    build_features,
+    compute_log_magnitude_ratio,
+    fit_freq_bin_edges,
+    fit_quantile_clip_bounds,
+    freq_to_bin_index,
+    freq_to_bin_onehot,
+)
 from .splits import SplitConfig, hierarchical_split_indices_within_label, stratified_split_indices
 
 
@@ -55,6 +65,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch_size", type=int, default=256)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight_decay", type=float, default=1e-4)
+    p.add_argument("--hidden_dims", type=int, nargs="+", default=(128, 64, 32))
 
     p.add_argument("--beta", type=float, default=0.999)
     p.add_argument("--tau", type=float, default=1.0)
@@ -62,11 +73,29 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--derived_features", action="store_true", default=True)
     p.add_argument("--no_derived_features", action="store_false", dest="derived_features")
 
+    p.add_argument("--feature_set", type=str, default="full", choices=("full", "phys_min"))
     p.add_argument("--it_encoding", type=str, default="bits", choices=("bits", "onehot"))
+    p.add_argument("--no_itstate_features", action="store_false", dest="use_itstate_features", default=True)
     p.add_argument("--freq_bins", type=int, default=10)
     p.add_argument("--no_freq_bins", action="store_true", default=False)
+    p.add_argument("--freq_bin_mode", type=str, default="onehot", choices=("onehot", "index", "none"))
+
+    p.add_argument("--use_closed_state_interactions", action="store_true", default=False)
+    p.add_argument("--use_impedance_features", action="store_true", default=False)
+    p.add_argument("--rf_features", choices=("none", "vswr", "rl", "vswr_rl"), default="none")
+    p.add_argument("--vswr_clip", type=float, default=100.0)
+    p.add_argument("--z0", type=float, default=50.0)
+    p.add_argument("--gamma_scale", type=float, default=1.0)
+    p.add_argument("--exclude_features", nargs="*", choices=ABLATION_FEATURES, default=())
+    p.add_argument("--split_indices_dir", type=str, default=None)
+
+    p.add_argument("--use_log_magnitude_ratio", action="store_true", default=False)
+    p.add_argument("--log_ratio_eps", type=float, default=1e-6)
+    p.add_argument("--log_ratio_lower_quantile", type=float, default=0.001)
+    p.add_argument("--log_ratio_upper_quantile", type=float, default=0.999)
 
     p.add_argument("--use_geometry_features", action="store_true", default=False)
+    p.add_argument("--geometry_mode", type=str, default="none", choices=("none", "full", "summary"))
 
     p.add_argument("--freq_tree_depth", type=int, default=0)
     p.add_argument("--freq_tree_min_leaf", type=int, default=200)
@@ -79,9 +108,26 @@ def _to_numpy_int64(x: Any) -> np.ndarray:
     return np.asarray(x, dtype=np.int64)
 
 
+def _validate_split_indices(
+    train_idx: np.ndarray,
+    val_idx: np.ndarray,
+    test_idx: np.ndarray,
+    n_samples: int,
+) -> None:
+    parts = [np.asarray(v, dtype=np.int64).reshape(-1) for v in (train_idx, val_idx, test_idx)]
+    combined = np.concatenate(parts)
+    if combined.size != n_samples:
+        raise ValueError(f"Fixed split has {combined.size} indices, expected {n_samples}")
+    if combined.size and (int(combined.min()) < 0 or int(combined.max()) >= n_samples):
+        raise ValueError("Fixed split contains an out-of-range index")
+    if np.unique(combined).size != n_samples:
+        raise ValueError("Fixed split indices overlap or do not cover every sample exactly once")
+
+
 def main() -> None:
     args = parse_args()
     set_seed(int(args.seed))
+    hidden_dims = tuple(int(v) for v in args.hidden_dims)
 
     split_cfg = SplitConfig(
         train=float(args.split[0]),
@@ -101,48 +147,121 @@ def main() -> None:
     features_df = load_features_csv(x_path)
     y = load_labels_csv(y_path)
 
-    feat_cfg = FeatureConfig(derived=bool(args.derived_features), it_encoding=str(args.it_encoding))
+    feat_cfg = FeatureConfig(
+        derived=bool(args.derived_features),
+        it_encoding=str(args.it_encoding),
+        feature_set=str(args.feature_set),
+        use_itstate_features=bool(args.use_itstate_features),
+        use_closed_state_interactions=bool(args.use_closed_state_interactions),
+        use_impedance_features=bool(args.use_impedance_features),
+        rf_features=str(args.rf_features),
+        vswr_clip=float(args.vswr_clip),
+        exclude_features=tuple(str(v) for v in args.exclude_features),
+        z0=float(args.z0),
+        gamma_scale=float(args.gamma_scale),
+    )
     x, feat_meta, scale_mask = build_features(features_df, feat_cfg)
 
     num_classes = int(np.max(y)) + 1
-    if split_cfg.hierarchical_col:
-        h = _to_numpy_int64(features_df[split_cfg.hierarchical_col].to_numpy())
-        tr_idx, va_idx, te_idx = hierarchical_split_indices_within_label(
-            y=y,
-            hierarchy=h,
-            train=split_cfg.train,
-            val=split_cfg.val,
-            test=split_cfg.test,
-            seed=split_cfg.seed,
-        )
-        split_mode = f"hierarchical_within_label:{split_cfg.hierarchical_col}"
+
+    split_indices_dir = Path(args.split_indices_dir) if args.split_indices_dir else None
+    split_paths = None if split_indices_dir is None else {
+        "train": split_indices_dir / "train_idx.npy",
+        "val": split_indices_dir / "val_idx.npy",
+        "test": split_indices_dir / "test_idx.npy",
+    }
+    if split_paths is not None and all(path.exists() for path in split_paths.values()):
+        tr_idx = np.load(split_paths["train"]).astype(np.int64)
+        va_idx = np.load(split_paths["val"]).astype(np.int64)
+        te_idx = np.load(split_paths["test"]).astype(np.int64)
+        _validate_split_indices(tr_idx, va_idx, te_idx, n_samples=y.shape[0])
+        split_mode = f"fixed_indices:{split_indices_dir}"
     else:
-        tr_idx, va_idx, te_idx = stratified_split_indices(
-            y=y,
-            train=split_cfg.train,
-            val=split_cfg.val,
-            test=split_cfg.test,
-            seed=split_cfg.seed,
-        )
-        split_mode = "stratified_label"
+        if split_paths is not None and any(path.exists() for path in split_paths.values()):
+            raise FileNotFoundError(f"Incomplete fixed split files in {split_indices_dir}")
+        if split_cfg.hierarchical_col:
+            h = _to_numpy_int64(features_df[split_cfg.hierarchical_col].to_numpy())
+            tr_idx, va_idx, te_idx = hierarchical_split_indices_within_label(
+                y=y,
+                hierarchy=h,
+                train=split_cfg.train,
+                val=split_cfg.val,
+                test=split_cfg.test,
+                seed=split_cfg.seed,
+            )
+            split_mode = f"hierarchical_within_label:{split_cfg.hierarchical_col}"
+        else:
+            tr_idx, va_idx, te_idx = stratified_split_indices(
+                y=y,
+                train=split_cfg.train,
+                val=split_cfg.val,
+                test=split_cfg.test,
+                seed=split_cfg.seed,
+            )
+            split_mode = "stratified_label"
+        _validate_split_indices(tr_idx, va_idx, te_idx, n_samples=y.shape[0])
+        if split_paths is not None:
+            split_indices_dir.mkdir(parents=True, exist_ok=True)
+            np.save(split_paths["train"], tr_idx.astype(np.int64))
+            np.save(split_paths["val"], va_idx.astype(np.int64))
+            np.save(split_paths["test"], te_idx.astype(np.int64))
 
     np.save(out_dir / "train_idx.npy", tr_idx.astype(np.int64))
     np.save(out_dir / "val_idx.npy", va_idx.astype(np.int64))
     np.save(out_dir / "test_idx.npy", te_idx.astype(np.int64))
 
+    log_ratio_lower: float | None = None
+    log_ratio_upper: float | None = None
+    if bool(args.use_log_magnitude_ratio):
+        log_ratio_raw = compute_log_magnitude_ratio(
+            features_df,
+            gamma_scale=float(args.gamma_scale),
+            eps=float(args.log_ratio_eps),
+        )
+        log_ratio_lower, log_ratio_upper = fit_quantile_clip_bounds(
+            log_ratio_raw[tr_idx],
+            lower_quantile=float(args.log_ratio_lower_quantile),
+            upper_quantile=float(args.log_ratio_upper_quantile),
+        )
+        log_ratio_clipped = np.clip(log_ratio_raw, log_ratio_lower, log_ratio_upper).astype(np.float32)
+        x = np.concatenate([x, log_ratio_clipped[:, None]], axis=1)
+        scale_mask = np.concatenate([scale_mask, np.ones((1,), dtype=bool)], axis=0)
+
     freq_all = features_df["closeFreqMHz"].to_numpy(np.float32)
-    if bool(args.no_freq_bins) or int(args.freq_bins) <= 0:
+    freq_bin_mode = str(args.freq_bin_mode).lower().strip()
+    if bool(args.no_freq_bins):
+        freq_bin_mode = "none"
+
+    if freq_bin_mode == "none" or int(args.freq_bins) <= 0:
         freq_edges = np.array([], dtype=np.float32)
-        freq_bins_oh = np.zeros((x.shape[0], 0), dtype=np.float32)
+        freq_bins_feat = np.zeros((x.shape[0], 0), dtype=np.float32)
+        freq_bins_dim = 0
+        freq_bins_kind = "none"
     else:
         freq_edges = fit_freq_bin_edges(freq_all[tr_idx], bins=int(args.freq_bins))
-        freq_bins_oh = freq_to_bin_onehot(freq_all, freq_edges)
+        if freq_bin_mode == "onehot":
+            freq_bins_feat = freq_to_bin_onehot(freq_all, freq_edges)
+            freq_bins_dim = int(freq_bins_feat.shape[1])
+            freq_bins_kind = "onehot"
+        elif freq_bin_mode == "index":
+            freq_bins_feat = freq_to_bin_index(freq_all, freq_edges)
+            freq_bins_dim = int(freq_bins_feat.shape[1])
+            freq_bins_kind = "index"
+        else:
+            raise ValueError(f"Unknown freq_bin_mode: {freq_bin_mode}")
 
-    if freq_bins_oh.shape[1] > 0:
-        x = np.concatenate([x, freq_bins_oh.astype(np.float32)], axis=1)
-        scale_mask = np.concatenate([scale_mask, np.zeros((freq_bins_oh.shape[1],), dtype=bool)], axis=0)
+    if freq_bins_feat.shape[1] > 0:
+        x = np.concatenate([x, freq_bins_feat.astype(np.float32)], axis=1)
+        if freq_bins_kind == "onehot":
+            scale_mask = np.concatenate([scale_mask, np.zeros((freq_bins_feat.shape[1],), dtype=bool)], axis=0)
+        else:
+            scale_mask = np.concatenate([scale_mask, np.zeros((freq_bins_feat.shape[1],), dtype=bool)], axis=0)
 
+    geometry_mode = str(args.geometry_mode).lower().strip()
     if bool(args.use_geometry_features):
+        geometry_mode = "full"
+
+    if geometry_mode != "none":
         g1_re = features_df["gammaIn1Re"].to_numpy(np.float32)
         g1_im = features_df["gammaIn1Im"].to_numpy(np.float32)
         g2_re = features_df["gammaIn2Re"].to_numpy(np.float32)
@@ -155,9 +274,16 @@ def main() -> None:
             g2_im=g2_im[tr_idx],
             y=y[tr_idx],
         )
-        geom = build_residual_features(g1_re=g1_re, g1_im=g1_im, g2_re=g2_re, g2_im=g2_im, params=params)
-        x = np.concatenate([x, geom.astype(np.float32)], axis=1)
-        scale_mask = np.concatenate([scale_mask, np.ones((geom.shape[1],), dtype=bool)], axis=0)
+        if geometry_mode == "full":
+            geom = build_residual_features(g1_re=g1_re, g1_im=g1_im, g2_re=g2_re, g2_im=g2_im, params=params)
+            x = np.concatenate([x, geom.astype(np.float32)], axis=1)
+            scale_mask = np.concatenate([scale_mask, np.ones((geom.shape[1],), dtype=bool)], axis=0)
+        elif geometry_mode == "summary":
+            geom = build_residual_summary_features(g1_re=g1_re, g1_im=g1_im, g2_re=g2_re, g2_im=g2_im, params=params)
+            x = np.concatenate([x, geom.astype(np.float32)], axis=1)
+            scale_mask = np.concatenate([scale_mask, np.ones((geom.shape[1],), dtype=bool)], axis=0)
+        else:
+            raise ValueError(f"Unknown geometry_mode: {geometry_mode}")
 
         header = "label\tn_train\tg1_cx\tg1_cy\tg1_r\tg2_cx\tg2_cy\tg2_r\n"
         table = circle_params_to_table(params)
@@ -166,8 +292,12 @@ def main() -> None:
 
     feat_meta = dict(feat_meta)
     feat_meta["feature_dim"] = int(x.shape[1])
-    feat_meta["freq_bins"] = 0 if freq_edges.size == 0 else int(freq_edges.size - 1)
-    feat_meta["use_geometry_features"] = bool(args.use_geometry_features)
+    feat_meta["freq_bins"] = int(freq_bins_dim)
+    feat_meta["freq_bin_mode"] = str(freq_bins_kind)
+    feat_meta["geometry_mode"] = str(geometry_mode)
+    feat_meta["use_log_magnitude_ratio"] = bool(args.use_log_magnitude_ratio)
+    feat_meta["gamma_scale"] = float(args.gamma_scale)
+    feat_meta["split_indices_dir"] = None if split_indices_dir is None else str(split_indices_dir)
 
     x_tr, y_tr = x[tr_idx], y[tr_idx]
     x_va, y_va = x[va_idx], y[va_idx]
@@ -213,6 +343,7 @@ def main() -> None:
         weights=torch.tensor(sample_w, dtype=torch.double),
         num_samples=int(sample_w.shape[0]),
         replacement=True,
+        generator=torch.Generator().manual_seed(int(args.seed)),
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -235,11 +366,16 @@ def main() -> None:
     if freq_tree_depth > 0:
         leaf_va_t = torch.tensor(leaf_va, dtype=torch.long, device=device)
         leaf_te_t = torch.tensor(leaf_te, dtype=torch.long, device=device)
-        model = FrequencyGatedMLP(in_dim=int(x_tr.shape[1]), num_classes=num_classes, num_leaves=num_leaves).to(device)
+        model = FrequencyGatedMLP(
+            in_dim=int(x_tr.shape[1]),
+            num_classes=num_classes,
+            num_leaves=num_leaves,
+            hidden_dims=hidden_dims,
+        ).to(device)
     else:
         leaf_va_t = None
         leaf_te_t = None
-        model = MLP(in_dim=int(x_tr.shape[1]), num_classes=num_classes).to(device)
+        model = MLP(in_dim=int(x_tr.shape[1]), num_classes=num_classes, hidden_dims=hidden_dims).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=float(args.lr), weight_decay=float(args.weight_decay))
 
     tau = float(args.tau)
@@ -312,6 +448,7 @@ def main() -> None:
                 "model": model.state_dict(),
                 "num_classes": num_classes,
                 "in_dim": int(x_tr.shape[1]),
+                "hidden_dims": hidden_dims,
                 "freq_tree_depth": freq_tree_depth,
                 "num_leaves": int(num_leaves),
             }
@@ -334,7 +471,22 @@ def main() -> None:
         feature_dim=np.array([feat_meta["feature_dim"]], dtype=np.int64),
         freq_bin_edges=freq_edges.astype(np.float32),
         freq_bins=np.array([feat_meta["freq_bins"]], dtype=np.int64),
-        use_geometry_features=np.array([1 if feat_meta["use_geometry_features"] else 0], dtype=np.int64),
+        freq_bin_mode=np.array([0 if feat_meta["freq_bin_mode"] == "none" else (1 if feat_meta["freq_bin_mode"] == "index" else 2)], dtype=np.int64),
+        geometry_mode=np.array([0 if feat_meta["geometry_mode"] == "none" else (1 if feat_meta["geometry_mode"] == "summary" else 2)], dtype=np.int64),
+        use_itstate_features=np.array([1 if feat_meta.get("use_itstate_features", True) else 0], dtype=np.int64),
+        use_closed_state_interactions=np.array([1 if feat_meta.get("use_closed_state_interactions", False) else 0], dtype=np.int64),
+        use_impedance_features=np.array([1 if feat_meta.get("use_impedance_features", False) else 0], dtype=np.int64),
+        rf_features=np.array([feat_meta.get("rf_features", "none")]),
+        vswr_clip=np.array([feat_meta.get("vswr_clip", 100.0)], dtype=np.float32),
+        exclude_features=np.array(feat_meta.get("exclude_features", [])),
+        z0=np.array([feat_meta.get("z0", 50.0)], dtype=np.float32),
+        gamma_scale=np.array([float(args.gamma_scale)], dtype=np.float32),
+        use_log_magnitude_ratio=np.array([1 if bool(args.use_log_magnitude_ratio) else 0], dtype=np.int64),
+        log_ratio_eps=np.array([float(args.log_ratio_eps)], dtype=np.float32),
+        log_ratio_lower_quantile=np.array([float(args.log_ratio_lower_quantile)], dtype=np.float32),
+        log_ratio_upper_quantile=np.array([float(args.log_ratio_upper_quantile)], dtype=np.float32),
+        log_ratio_lower=np.array([] if log_ratio_lower is None else [log_ratio_lower], dtype=np.float32),
+        log_ratio_upper=np.array([] if log_ratio_upper is None else [log_ratio_upper], dtype=np.float32),
         freq_tree_depth=np.array([freq_tree_depth], dtype=np.int64),
         freq_tree_threshold=np.array([] if tree is None else tree.threshold, dtype=np.float32),
         freq_tree_left=np.array([] if tree is None else tree.left, dtype=np.int64),
@@ -381,18 +533,36 @@ def main() -> None:
         "split_mode": split_mode,
         "epochs": int(args.epochs),
         "batch_size": int(args.batch_size),
+        "hidden_dims": [int(v) for v in hidden_dims],
         "lr": float(args.lr),
         "weight_decay": float(args.weight_decay),
         "beta": float(args.beta),
         "tau": float(args.tau),
         "derived_features": bool(args.derived_features),
+        "feature_set": str(args.feature_set),
         "it_encoding": str(args.it_encoding),
-        "freq_bins": 0 if bool(args.no_freq_bins) else int(args.freq_bins),
-        "use_geometry_features": bool(args.use_geometry_features),
+        "use_itstate_features": bool(args.use_itstate_features),
+        "freq_bins": 0 if freq_bin_mode == "none" else int(args.freq_bins),
+        "freq_bin_mode": str(freq_bin_mode),
+        "use_closed_state_interactions": bool(args.use_closed_state_interactions),
+        "use_impedance_features": bool(args.use_impedance_features),
+        "rf_features": str(args.rf_features),
+        "vswr_clip": float(args.vswr_clip),
+        "exclude_features": [str(v) for v in args.exclude_features],
+        "use_log_magnitude_ratio": bool(args.use_log_magnitude_ratio),
+        "log_ratio_eps": float(args.log_ratio_eps),
+        "log_ratio_lower_quantile": float(args.log_ratio_lower_quantile),
+        "log_ratio_upper_quantile": float(args.log_ratio_upper_quantile),
+        "log_ratio_lower": log_ratio_lower,
+        "log_ratio_upper": log_ratio_upper,
+        "z0": float(args.z0),
+        "gamma_scale": float(args.gamma_scale),
+        "geometry_mode": str(geometry_mode),
         "freq_tree_depth": freq_tree_depth,
         "freq_tree_min_leaf": int(args.freq_tree_min_leaf),
         "freq_tree_candidates": int(args.freq_tree_candidates),
         "feature_dim": int(feat_meta["feature_dim"]),
+        "split_indices_dir": None if split_indices_dir is None else str(split_indices_dir),
         "device_auto": str(device),
     }
     (out_dir / "config.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")

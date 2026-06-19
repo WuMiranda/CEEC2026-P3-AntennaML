@@ -45,9 +45,11 @@ python -m balanced_framework.train_balanced --data_dir 0514 --out_dir outputs/ba
 - `--epochs 50`
 - `--batch_size 256`
 - `--tau 1.0`：Logit Adjustment 系数（0 表示关闭）
+- `--feature_set full|phys_min`：特征集合（默认 full；phys_min 为“少特征、强物理含义”集合）
 - `--it_encoding bits|onehot`：itState 编码（默认 bits=4bit）
-- `--freq_bins 10` / `--no_freq_bins`：频率分箱 one-hot（默认 10；分箱边界只在 train 拟合）
-- `--use_geometry_features`：追加复平面圆拟合残差特征（输出 `circle_params.tsv`）
+- `--freq_bin_mode onehot|index|none`：频率分箱特征形式（默认 onehot；index 为单一“频段编号”；none 关闭）
+- `--freq_bins 10`：频率分箱数量（配合 freq_bin_mode 使用；分箱边界只在 train 拟合）
+- `--geometry_mode none|summary|full`：复平面几何特征（summary 为“最小/次小残差与 gap”，full 为每类残差向量；输出 `circle_params.tsv`）
 - `--freq_tree_depth N`：用“频率树”把样本路由到不同 MLP 叶子头（默认 0=关闭）
 
 ## 频率树 + MLP（面向物理的分段建模）
@@ -59,6 +61,18 @@ python -m balanced_framework.train_balanced --data_dir 0514 --out_dir outputs/ba
 ```bash
 python -m balanced_framework.train_balanced --data_dir 0514 --freq_tree_depth 2 --out_dir outputs/0514_freqtree_d2
 ```
+
+## 推荐的“少特征、强物理含义”运行方式
+
+如果参赛强调“特征越少越好且每个特征有物理意义”，建议用：
+
+```bash
+python -m balanced_framework.train_balanced --data_dir 0514 --feature_set phys_min --it_encoding bits --freq_bin_mode index --freq_bins 10 --geometry_mode none --out_dir outputs/0514_phys_min
+```
+
+其中：
+- `phys_min` 只保留频率、反射强度/变化幅度、相位差/相对角等少量可解释物理量
+- `freq_bin_mode=index` 仅增加一个“频段编号”特征，避免 one-hot 带来的特征维度膨胀
 
 ## 输出产物
 
@@ -95,4 +109,4 @@ python -m balanced_framework.analyze_outputs --outputs_dir outputs --out_dir out
 已实现的增强选项：
 - itState 支持 `4bit(bits)` 或 `onehot`（见 `--it_encoding`）
 - 频率支持 train-fit 的等距分箱 one-hot（见 `--freq_bins/--no_freq_bins`）
-- 支持追加 tmp.py 风格的“按 label 拟合圆→残差特征”（见 `--use_geometry_features`），并输出 `circle_params.tsv`
+- 支持追加 tmp.py 风格的“按 label 拟合圆→残差特征”（见 `--geometry_mode full`；或用兼容参数 `--use_geometry_features`），并输出 `circle_params.tsv`

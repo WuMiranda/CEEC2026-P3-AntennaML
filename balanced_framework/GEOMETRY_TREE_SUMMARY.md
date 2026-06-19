@@ -161,7 +161,7 @@ b\_0 = itState & 1,\quad b\_1=(itState>>1)&1,\quad b\_2=(itState>>2)&1,\quad b\_
   - `--freq_bins 10`（默认）：基于 train 的频率范围做等距分箱并 one-hot
   - `--no_freq_bins`：关闭分箱（只保留连续频率特征并由标准化处理）
 - 几何残差特征（参考 tmp.py，避免泄露：只用 train split 拟合圆参数）：
-  - `--use_geometry_features`：在特征中追加“到每个 label 圆的残差 + 相对角度”
+  - `--geometry_mode full`：在特征中追加“到每个 label 圆的残差 + 相对角度”（兼容参数 `--use_geometry_features` 等价于 full）
   - 输出目录会保存 `circle_params.tsv`，记录每个 label 的圆心与半径
 
 同时，为避免对 one-hot/bit 等离散特征做不必要的标准化，预处理使用“按列掩码标准化”：只对连续特征列做 z-score，离散列保持原值。
@@ -173,14 +173,29 @@ b\_0 = itState & 1,\quad b\_1=(itState>>1)&1,\quad b\_2=(itState>>2)&1,\quad b\_
 python -m balanced_framework.train_balanced --data_dir 0514 --out_dir outputs/0514_phys_base
 \`\`\`
 
-- 开几何残差（追加 tmp.py 思路特征）：
+- 开几何残差（追加 tmp.py 思路特征，维度较高）：
 \`\`\`bash
-python -m balanced_framework.train_balanced --data_dir 0514 --use_geometry_features --out_dir outputs/0514_phys_geo
+python -m balanced_framework.train_balanced --data_dir 0514 --geometry_mode full --out_dir outputs/0514_phys_geo
 \`\`\`
 
 - 关闭频率分箱（只用连续频率 + 标准化）：
 \`\`\`bash
 python -m balanced_framework.train_balanced --data_dir 0514 --no_freq_bins --out_dir outputs/0514_phys_nobin
+\`\`\`
+
+- 少特征版本（每个特征具备明确物理含义）：
+  - `feature_set=phys_min`：保留频率 + 反射强度/变化幅度 + 相位差/相对角
+  - `freq_bin_mode=index`：仅增加一个“频段编号”，避免 one-hot 维度膨胀
+
+\`\`\`bash
+python -m balanced_framework.train_balanced --data_dir 0514 --feature_set phys_min --it_encoding bits --freq_bin_mode index --freq_bins 10 --geometry_mode none --out_dir outputs/0514_phys_min
+\`\`\`
+
+- 几何残差的“压缩版”（保留物理意义、减少维度）：
+  - `geometry_mode=summary`：只保留 g1/g2 到各类圆的最小残差、次小残差与 gap（6 维），用于表达“最接近哪个原型以及区分度”
+
+\`\`\`bash
+python -m balanced_framework.train_balanced --data_dir 0514 --feature_set phys_min --geometry_mode summary --freq_bin_mode index --freq_bins 10 --out_dir outputs/0514_phys_min_geom_summary
 \`\`\`
 
 ## 11. 频率树嫁接到 MLP 前：按频段分段建模（与物理意义一致）

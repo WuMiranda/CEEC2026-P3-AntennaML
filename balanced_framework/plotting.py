@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import numpy as np
-import matplotlib.pyplot as plt
 
 
 def save_confusion_matrix_png(
@@ -11,6 +10,10 @@ def save_confusion_matrix_png(
     title: str,
 ) -> None:
     out_path = Path(out_path)
+    try:
+        import matplotlib.pyplot as plt
+    except ModuleNotFoundError:
+        return
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(1, 1, 1)
     im = ax.imshow(cm, cmap="Blues")

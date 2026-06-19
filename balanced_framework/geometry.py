@@ -121,3 +121,26 @@ def build_residual_features(
     out[:, -1] = np.arctan2(cross, dot).astype(np.float32)
     return out
 
+
+def build_residual_summary_features(
+    g1_re: np.ndarray,
+    g1_im: np.ndarray,
+    g2_re: np.ndarray,
+    g2_im: np.ndarray,
+    params: CircleParams,
+) -> np.ndarray:
+    full = build_residual_features(g1_re=g1_re, g1_im=g1_im, g2_re=g2_re, g2_im=g2_im, params=params)
+    k = params.labels.shape[0]
+    g1 = full[:, :k]
+    g2 = full[:, k : 2 * k]
+
+    def _min_second_gap(a: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        part = np.partition(a, kth=1, axis=1)
+        m1 = part[:, 0]
+        m2 = part[:, 1]
+        gap = m2 - m1
+        return m1, m2, gap
+
+    g1_min, g1_second, g1_gap = _min_second_gap(g1)
+    g2_min, g2_second, g2_gap = _min_second_gap(g2)
+    return np.stack([g1_min, g1_second, g1_gap, g2_min, g2_second, g2_gap], axis=1).astype(np.float32)
