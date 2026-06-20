@@ -1,0 +1,92 @@
+{
+  "model_dir": "outputs/expN_minusplus",
+  "input_dim": 24,
+  "num_classes": 15,
+  "hidden_dims": [
+    64,
+    32
+  ],
+  "model_type": "mlp",
+  "estimation_method": {
+    "params": "Counts all learnable parameters in the saved PyTorch model.",
+    "macs": "Counts only Linear-layer multiply-accumulate operations for single-sample forward inference (batch=1).",
+    "flops": "Counts Linear FLOPs as 2*MACs plus bias adds, and also includes BatchNorm1d/ReLU elementwise inference FLOPs.",
+    "note": "Latency should be measured separately on the target hardware; MACs/FLOPs are architecture estimates and do not depend on retraining."
+  },
+  "fp32": {
+    "total_params": 4367,
+    "trainable_params": 4367,
+    "macs": 4064,
+    "flops": 8719,
+    "serialized_state_size_mb": 0.02249431610107422
+  },
+  "int8_dynamic": {
+    "total_params": 4367,
+    "trainable_params": 4367,
+    "macs": 4064,
+    "flops": 8719,
+    "serialized_state_size_mb": 0.012772560119628906,
+    "quantization_scope": "Dynamic quantization over Linear layers on CPU."
+  },
+  "layerwise": [
+    {
+      "name": "net.0",
+      "type": "Linear",
+      "in_features": 24,
+      "out_features": 64,
+      "macs": 1536,
+      "flops": 3136
+    },
+    {
+      "name": "net.1",
+      "type": "BatchNorm1d",
+      "num_features": 64,
+      "macs": 0,
+      "flops": 256
+    },
+    {
+      "name": "net.2",
+      "type": "ReLU",
+      "num_features": 64,
+      "macs": 0,
+      "flops": 64
+    },
+    {
+      "name": "net.4",
+      "type": "Linear",
+      "in_features": 64,
+      "out_features": 32,
+      "macs": 2048,
+      "flops": 4128
+    },
+    {
+      "name": "net.5",
+      "type": "BatchNorm1d",
+      "num_features": 32,
+      "macs": 0,
+      "flops": 128
+    },
+    {
+      "name": "net.6",
+      "type": "ReLU",
+      "num_features": 32,
+      "macs": 0,
+      "flops": 32
+    },
+    {
+      "name": "net.8",
+      "type": "Linear",
+      "in_features": 32,
+      "out_features": 15,
+      "macs": 480,
+      "flops": 975
+    }
+  ],
+  "training_config_excerpt": {
+    "tau": 0.5,
+    "feature_dim": 24,
+    "rf_features": "vswr_rl",
+    "use_log_magnitude_ratio": true,
+    "use_impedance_features": false
+  }
+}

@@ -1,0 +1,14 @@
+platform: Linux-6.8.0-111-generic-x86_64-with-glibc2.35
+python: 3.11.7 (main, Dec 15 2023, 18:12:31) [GCC 11.2.0]
+numpy: 1.26.4
+torch: 2.3.0+cu121
+cpu: x86_64
+cpu_count: 24
+threads: 1
+benchmark_device: cpu
+model_dir: outputs/expN_minusplus
+split: test
+warmup_runs: 200
+timed_runs: 5000
+latency_batch_size: 1
+eval_batch_size: 1024
